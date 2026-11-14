@@ -1364,6 +1364,7 @@ typedef struct settings
       char microphone_resampler[32];
 #endif
       char input_keyboard_layout[64];
+      char input_oberon_address[64];
       char cheevos_custom_host[64];
 
 #ifdef HAVE_LAKKA

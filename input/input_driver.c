@@ -768,6 +768,9 @@ static hid_driver_t null_hid = {
 input_device_driver_t *joypad_drivers[] = {
 #ifdef HAVE_XINPUT
    &xinput_joypad,
+#ifdef HAVE_NETWORKING
+   &oberon_joypad,
+#endif
 #endif
 #ifdef GEKKO
    &gx_joypad,

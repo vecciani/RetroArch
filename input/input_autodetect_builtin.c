@@ -972,6 +972,9 @@ const char* const input_builtin_autoconfs[] =
 #elif defined(_WIN32)
 #if !defined(__STDC_C89__) && !defined(__STDC_C89_AMENDMENT_1__)
    DECL_AUTOCONF_DEVICE("XInput Controller", "xinput", XINPUT_DEFAULT_BINDS),
+#ifdef HAVE_NETWORKING
+   DECL_AUTOCONF_DEVICE("Oberon Gamepad", "oberon", XINPUT_DEFAULT_BINDS),
+#endif
 #endif
 #endif
 #ifdef HAVE_SDL2

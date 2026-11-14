@@ -1058,6 +1058,9 @@ INPUT
 #else
 #include "../input/drivers_joypad/xinput_joypad.c"
 #endif
+#ifdef HAVE_NETWORKING
+#include "../input/drivers_joypad/oberon_joypad.c"
+#endif
 #endif
 
 /* the thread the joypad drivers write to their controllers from */
