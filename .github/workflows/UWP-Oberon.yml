@@ -15,7 +15,8 @@ on:
     branches: [oberon-joypad]
 
 permissions:
-  contents: read
+  # write: the cores are in a draft release, which only writers see
+  contents: write
 
 jobs:
   uwp:
@@ -47,6 +48,22 @@ jobs:
           }
           Set-Content $path $xml -NoNewline
           Select-String -Path $path -Pattern 'Identity|DisplayName'
+
+      # UWP loads cores only from inside the package.
+      - name: Bundle cores
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = "pkg/msvc/msvc-uwp/cores/x64"
+          gh release download uwp-cores-x64 -R $env:GITHUB_REPOSITORY -D $dir
+          Get-Content "$dir/SHA256SUMS" | ForEach-Object {
+            $hash, $name = $_ -split '\s+', 2
+            if ((Get-FileHash "$dir/$name" -Algorithm SHA256).Hash -ne $hash) { throw "checksum: $name" }
+          }
+          Move-Item "$dir/*_libretro.dll" "$dir/cores/"
+          Remove-Item "$dir/SHA256SUMS"
+          Get-ChildItem -Recurse $dir -Filter *.dll | ForEach-Object { "{0,10} {1}" -f $_.Length, $_.FullName.Substring((Get-Location).Path.Length) }
 
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc"
