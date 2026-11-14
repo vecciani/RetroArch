@@ -1,0 +1,60 @@
+name: UWP test package (oberon joypad)
+
+# Fork-only: a sideloadable Xbox package. With its own identity it
+# installs next to an existing RetroArch; with RetroArch's it updates it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity:
+        description: "own: installs next to RetroArch. retroarch: updates the installed RetroArch."
+        type: choice
+        options: [own, retroarch]
+        default: own
+  push:
+    branches: [oberon-joypad]
+
+permissions:
+  contents: read
+
+jobs:
+  uwp:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Package identity
+        shell: pwsh
+        env:
+          IDENTITY: ${{ inputs.identity || 'own' }}
+        run: |
+          $path = "pkg/msvc/msvc-uwp/Package.appxmanifest"
+          $xml  = Get-Content $path -Raw
+          # each build installs over the previous one as an update
+          $xml  = $xml -replace '(<Identity [^>]*Version=")(\d+\.\d+\.\d+)\.\d+', ('${1}${2}.' + $env:GITHUB_RUN_NUMBER)
+          if ($env:IDENTITY -eq 'own') {
+            $xml  = $xml -replace '(<Identity Name=")[^"]+', '${1}RetroArch.Oberon.Test'
+            $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}8c2e6d1a-4f3b-4a7e-9b5d-2e7f4c1a6b90'
+            $xml  = $xml -replace '<DisplayName>[^<]*</DisplayName>', '<DisplayName>RetroArch Oberon</DisplayName>'
+            $xml  = $xml -replace '(<uap:VisualElements[^>]*?DisplayName=")[^"]*', '${1}RetroArch Oberon'
+            # keep the retroarch: protocol with the installed RetroArch (launchers use it)
+            $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="retroarch-oberon">'
+            if ($xml -notmatch 'Protocol Name="retroarch-oberon"') { throw "protocol not renamed" }
+          }
+          Set-Content $path $xml -NoNewline
+          Select-String -Path $path -Pattern 'Identity|DisplayName'
+
+      - name: Compile RA
+        working-directory: "${{github.workspace}}/pkg/msvc"
+        run: |
+          msbuild -p:"Configuration=Release" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RetroArch-Oberon-UWP-x64-${{ inputs.identity || 'own' }}
+          path: pkg/msvc/AppPackages/RetroArch-msvc2022-UWP
+          if-no-files-found: error
