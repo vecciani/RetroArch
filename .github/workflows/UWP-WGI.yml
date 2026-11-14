@@ -1,0 +1,45 @@
+name: UWP test package (wgi joypad)
+
+# Fork-only: a sideloadable Xbox package under its own identity,
+# so it installs next to an existing RetroArch.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [wgi-joypad]
+
+permissions:
+  contents: read
+
+jobs:
+  uwp:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Own package identity
+        shell: pwsh
+        run: |
+          $path = "pkg/msvc/msvc-uwp/Package.appxmanifest"
+          $xml  = Get-Content $path -Raw
+          $xml  = $xml -replace '(<Identity Name=")[^"]+', '${1}RetroArch.WGI.Test'
+          $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}5b0c4a3e-7d1f-4c8a-9e2b-1f6d3a8c9e70'
+          $xml  = $xml -replace '<DisplayName>[^<]*</DisplayName>', '<DisplayName>RetroArch WGI</DisplayName>'
+          $xml  = $xml -replace '(<uap:VisualElements[^>]*?DisplayName=")[^"]*', '${1}RetroArch WGI'
+          Set-Content $path $xml -NoNewline
+          Select-String -Path $path -Pattern 'Identity|DisplayName'
+
+      - name: Compile RA
+        working-directory: "${{github.workspace}}/pkg/msvc"
+        run: |
+          msbuild -p:"Configuration=Release" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RetroArch-WGI-UWP-x64
+          path: pkg/msvc/AppPackages/RetroArch-msvc2022-UWP
+          if-no-files-found: error
