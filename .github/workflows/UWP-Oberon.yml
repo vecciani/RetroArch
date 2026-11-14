@@ -45,6 +45,10 @@ jobs:
             # keep the retroarch: protocol with the installed RetroArch (launchers use it)
             $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="retroarch-oberon">'
             if ($xml -notmatch 'Protocol Name="retroarch-oberon"') { throw "protocol not renamed" }
+            # Game Vault opens RetroArch through this one
+            $gv   = '<uap:Extension Category="windows.protocol"><uap:Protocol Name="gamevault-retroarch"><uap:DisplayName>gamevault-retroarch</uap:DisplayName></uap:Protocol></uap:Extension>'
+            $xml  = $xml -replace '</Extensions>', ($gv + '</Extensions>')
+            if ($xml -notmatch 'Protocol Name="gamevault-retroarch"') { throw "gamevault protocol not added" }
           }
           Set-Content $path $xml -NoNewline
           Select-String -Path $path -Pattern 'Identity|DisplayName'
@@ -56,14 +60,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $dir = "pkg/msvc/msvc-uwp/cores/x64"
-          gh release download uwp-cores-x64 -R $env:GITHUB_REPOSITORY -D $dir
+
+          # every core, from XboxEmulationHub's Xbox build, and the DLLs they load
+          $xeh = "$env:RUNNER_TEMP/xeh"
+          gh release download 08-19-2026 -R XboxEmulationHub/RetroArch -p RetroArch-SeriesConsoles-AllCores.appx -D $xeh
+          if ((Get-FileHash "$xeh/RetroArch-SeriesConsoles-AllCores.appx" -Algorithm SHA256).Hash -ne "0B327BF6CC4D0B18CAA0A0FC2337C96B53920F46BBFD136920E1ED9E5656B00A") { throw "checksum: AllCores" }
+          Expand-Archive "$xeh/RetroArch-SeriesConsoles-AllCores.appx" "$xeh/x" -Force
+          Copy-Item "$xeh/x/cores/*_libretro.dll" "$dir/cores/"
+          # not libEGL/libGLESv2: the package's own are ANGLE's
+          foreach ($f in "opengl32","libgallium_wgl","dxil","spirv_to_dxil","vulkan_dzn","z-1","winmm","msvcp140","msvcp140_1","vcruntime140","vcruntime140_1") {
+            Copy-Item "$xeh/x/$f.dll" "$dir/"
+          }
+          Remove-Item -Recurse -Force $xeh
+
+          # the user's own cores take precedence
+          gh release download uwp-cores-x64 -R $env:GITHUB_REPOSITORY -D $dir --clobber
           Get-Content "$dir/SHA256SUMS" | ForEach-Object {
             $hash, $name = $_ -split '\s+', 2
             if ((Get-FileHash "$dir/$name" -Algorithm SHA256).Hash -ne $hash) { throw "checksum: $name" }
           }
-          Move-Item "$dir/*_libretro.dll" "$dir/cores/"
+          Move-Item "$dir/*_libretro.dll" "$dir/cores/" -Force
           Remove-Item "$dir/SHA256SUMS"
-          Get-ChildItem -Recurse $dir -Filter *.dll | ForEach-Object { "{0,10} {1}" -f $_.Length, $_.FullName.Substring((Get-Location).Path.Length) }
+          "{0} cores" -f (Get-ChildItem "$dir/cores" -Filter *_libretro.dll).Count
+          Get-ChildItem $dir -Filter *.dll | ForEach-Object { "{0,10} {1}" -f $_.Length, $_.Name }
 
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc"
