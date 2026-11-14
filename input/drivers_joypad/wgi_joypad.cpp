@@ -61,7 +61,7 @@ static const GamepadButtons wgi_button_map[WGI_NUM_BUTTONS] = {
    GamepadButtons::RightThumbstick
 };
 
-typedef struct
+typedef struct wgi_pad
 {
    Gamepad          pad{ nullptr };
    GamepadReading   reading{};
