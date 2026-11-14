@@ -46,6 +46,9 @@
     <ClCompile Include="..\..\..\os\uwp\uwp_main.cpp">
       <Filter>uwp</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\input\drivers_joypad\wgi_joypad.cpp">
+      <Filter>uwp</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\griffin\griffin_rslc.c">
       <Filter>griffin</Filter>
     </ClCompile>

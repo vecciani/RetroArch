@@ -280,6 +280,7 @@ enum joypad_driver_enum
    JOYPAD_RWEBPAD,
    JOYPAD_MFI,
    JOYPAD_WINRAW,
+   JOYPAD_WGI,
    JOYPAD_NULL
 };
 
@@ -745,6 +746,8 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_NULL;
 
 #if defined(HAVE_STEAM) && defined(__linux__) && (defined(HAVE_SDL2) || defined(HAVE_SDL3))
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_SDL;
+#elif defined(__WINRT__)
+static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_WGI;
 #elif defined(HAVE_XINPUT)
 static const enum joypad_driver_enum JOYPAD_DEFAULT_DRIVER = JOYPAD_XINPUT;
 #elif defined(GEKKO)
@@ -1749,6 +1752,8 @@ const char *config_get_default_joypad(void)
          return "mfi";
       case JOYPAD_WINRAW:
          return "winraw";
+      case JOYPAD_WGI:
+         return "wgi";
       case JOYPAD_NULL:
          break;
    }

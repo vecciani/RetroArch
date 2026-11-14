@@ -973,6 +973,9 @@ const char* const input_builtin_autoconfs[] =
 #if !defined(__STDC_C89__) && !defined(__STDC_C89_AMENDMENT_1__)
    DECL_AUTOCONF_DEVICE("XInput Controller", "xinput", XINPUT_DEFAULT_BINDS),
 #endif
+#ifdef __WINRT__
+   DECL_AUTOCONF_DEVICE("WGI Gamepad", "wgi", XINPUT_DEFAULT_BINDS),
+#endif
 #endif
 #ifdef HAVE_SDL2
    DECL_AUTOCONF_DEVICE("Standard Gamepad", "sdl2", SDL2_DEFAULT_BINDS),

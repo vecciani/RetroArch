@@ -242,6 +242,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\os\uwp\uwp_main.cpp" />
+    <ClCompile Include="..\..\..\input\drivers_joypad\wgi_joypad.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

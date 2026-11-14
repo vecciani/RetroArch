@@ -766,6 +766,9 @@ static hid_driver_t null_hid = {
 #endif
 
 input_device_driver_t *joypad_drivers[] = {
+#ifdef __WINRT__
+   &wgi_joypad,
+#endif
 #ifdef HAVE_XINPUT
    &xinput_joypad,
 #endif
