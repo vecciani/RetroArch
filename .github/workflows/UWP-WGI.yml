@@ -35,8 +35,11 @@ jobs:
           # keep the retroarch: protocol with the installed RetroArch (launchers use it)
           $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="retroarch-wgi">'
           if ($xml -notmatch 'Protocol Name="retroarch-wgi"') { throw "protocol not renamed" }
+          # test: expandedResources makes the Xbox suspend background apps (Oberon)
+          $xml  = $xml -replace '\s*<rescap:Capability Name="expandedResources"\s*/>', ''
+          if ($xml -match 'expandedResources') { throw "expandedResources not removed" }
           Set-Content $path $xml -NoNewline
-          Select-String -Path $path -Pattern 'Identity|DisplayName'
+          Select-String -Path $path -Pattern 'Identity|DisplayName|Capability'
 
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc"
