@@ -35,6 +35,7 @@
 #endif
 
 #include "../../configuration.h"
+#include "../../runloop.h"
 #include "../../tasks/tasks_internal.h"
 #include "../input_driver.h"
 #include "../../verbosity.h"
@@ -95,7 +96,9 @@ typedef struct oberon
    bool awaiting;
    bool up;
    bool reported;
+   unsigned port;
    char address[64];
+   char host[64];
    uint8_t rx[1024];
    uint8_t tx[512];
 } oberon_t;
@@ -138,11 +141,23 @@ static void oberon_close(oberon_t *ob)
       memset(&ob->pads[i], 0, sizeof(ob->pads[i]));
 }
 
+static void oberon_notify(const char *msg)
+{
+   runloop_msg_queue_push(msg, strlen(msg), 1, 180, false, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+}
+
 static void oberon_fail(oberon_t *ob, const char *why)
 {
    /* once a streak: the remote may be off for hours */
    if (!ob->reported)
-      RARCH_WARN("[Oberon] %s %s, retrying.\n", ob->address, why);
+   {
+      char msg[160];
+      snprintf(msg, sizeof(msg), "Oberon: %s:%u %s, retrying.",
+            ob->host, ob->port, why);
+      RARCH_WARN("[Oberon] %s\n", msg);
+      oberon_notify(msg);
+   }
    ob->reported = true;
    ob->up       = false;
    oberon_close(ob);
@@ -150,7 +165,7 @@ static void oberon_fail(oberon_t *ob, const char *why)
 }
 
 /* Dotted IPv4 only, so that resolving it never waits. */
-static bool oberon_address_valid(const char *s)
+static bool oberon_host_valid(const char *s)
 {
    unsigned dots   = 0;
    unsigned digits = 0;
@@ -177,6 +192,38 @@ static bool oberon_address_valid(const char *s)
    }
 
    return dots == 3 && digits > 0;
+}
+
+/* As typed, or as Oberon shows it: "192.168.0.5", "192.168.0.5:26401"
+ * or "ws://192.168.0.5:26401/". */
+static bool oberon_parse_address(const char *in, char *host, size_t len,
+      unsigned *port)
+{
+   char *colon;
+   size_t n;
+
+   while (*in == ' ')
+      in++;
+   if (!strncmp(in, "ws://", 5) || !strncmp(in, "WS://", 5))
+      in += 5;
+
+   strlcpy(host, in, len);
+   n = strlen(host);
+   while (n && (host[n - 1] == '/' || host[n - 1] == ' '))
+      host[--n] = '\0';
+
+   *port = OBERON_PORT;
+   if ((colon = strchr(host, ':')))
+   {
+      char *end;
+      unsigned long p = strtoul(colon + 1, &end, 10);
+      if (*end || !p || p > 65535)
+         return false;
+      *port  = (unsigned)p;
+      *colon = '\0';
+   }
+
+   return oberon_host_valid(host);
 }
 
 /* Client frames are masked. Dropped when the queue is full. */
@@ -253,7 +300,7 @@ static void oberon_begin_upgrade(oberon_t *ob)
          "Sec-WebSocket-Key: UmV0cm9BcmNoIE9iZXJvbg==\r\n"
          "Sec-WebSocket-Version: 13\r\n"
          "\r\n",
-         ob->address, OBERON_PORT);
+         ob->host, ob->port);
    ob->rx_len   = 0;
    ob->phase    = OBERON_UPGRADING;
    ob->deadline = cpu_features_get_time_usec() + OBERON_TIMEOUT_USEC;
@@ -261,7 +308,7 @@ static void oberon_begin_upgrade(oberon_t *ob)
 
 static void oberon_start(oberon_t *ob)
 {
-   ob->fd = socket_init((void**)&ob->addr, OBERON_PORT, ob->address,
+   ob->fd = socket_init((void**)&ob->addr, (uint16_t)ob->port, ob->host,
          SOCKET_TYPE_STREAM, AF_INET);
    if (ob->fd < 0)
    {
@@ -417,7 +464,13 @@ static bool oberon_parse(oberon_t *ob)
                oberon_read_pads(ob, payload);
                ob->awaiting = false;
                if (!ob->up)
-                  RARCH_LOG("[Oberon] Connected to %s.\n", ob->address);
+               {
+                  char msg[128];
+                  snprintf(msg, sizeof(msg), "Oberon: connected to %s:%u.",
+                        ob->host, ob->port);
+                  RARCH_LOG("[Oberon] %s\n", msg);
+                  oberon_notify(msg);
+               }
                ob->up       = true;
                ob->reported = false;
             }
@@ -469,12 +522,23 @@ static void oberon_network_poll(oberon_t *ob)
       ob->up       = false;
       ob->reported = false;
       ob->deadline = now;
+      ob->host[0]  = '\0';
+      if (     *ob->address
+            && !oberon_parse_address(ob->address, ob->host,
+               sizeof(ob->host), &ob->port))
+      {
+         char msg[128];
+         ob->host[0] = '\0';
+         snprintf(msg, sizeof(msg), "Oberon: \"%s\" is not an IPv4 address.",
+               ob->address);
+         oberon_notify(msg);
+      }
    }
 
    switch (ob->phase)
    {
       case OBERON_IDLE:
-         if (now >= ob->deadline && oberon_address_valid(ob->address))
+         if (now >= ob->deadline && *ob->host)
             oberon_start(ob);
          break;
       case OBERON_CONNECTING:
