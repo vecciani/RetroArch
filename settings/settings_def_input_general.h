@@ -16,11 +16,14 @@ S_UINT_EX(input_max_users, INPUT_MAX_USERS,
       DEFAULT_INPUT_MAX_USERS, SD_FLAG_LAKKA_ADVANCED, SDESC_RANGE_MINMAX, 0, 1, MAX_USERS, 1, 1, setting_action_ok_uint, setting_get_string_representation_max_users, NULL, NULL, setting_uint_action_left_with_refresh, setting_uint_action_right_with_refresh, 0,
       "Maximum Users",
       "Maximum amount of users supported by RetroArch. (Restart required)")
+/* a string: the configuration.c row stays literal for this setting. */
+#ifndef SETTINGS_DEF_CONFIG_PASS
 S_STRING(input_oberon_address, INPUT_OBERON_ADDRESS,
       "input_oberon_address",
       "", SD_FLAG_ALLOW_INPUT, 0, NULL, NULL, setting_generic_action_start_default, NULL, NULL, NULL, ST_UI_TYPE_STRING_LINE_EDIT,
       "Oberon Remote Address",
       "IPv4 address of the device running Oberon Remote, read by the 'oberon' controller driver.")
+#endif
 /* config key "menu_unified_controls" differs from the label string; the
  * configuration.c row stays literal for this setting. */
 #ifndef SETTINGS_DEF_CONFIG_PASS
