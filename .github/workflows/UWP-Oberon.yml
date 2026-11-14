@@ -1,15 +1,16 @@
 name: UWP test package (oberon joypad)
 
 # Fork-only: a sideloadable Xbox package. With its own identity it
-# installs next to an existing RetroArch; with RetroArch's it updates it.
+# installs next to an existing RetroArch; with RetroArch's it updates it;
+# with Game Vault's RetroArch identity, Game Vault finds and launches it.
 
 on:
   workflow_dispatch:
     inputs:
       identity:
-        description: "own: installs next to RetroArch. retroarch: updates the installed RetroArch."
+        description: "own: installs next to RetroArch. retroarch: updates the installed RetroArch. gamevault: what Game Vault looks for."
         type: choice
-        options: [own, retroarch]
+        options: [own, retroarch, gamevault]
         default: own
   push:
     branches: [oberon-joypad]
@@ -37,6 +38,23 @@ jobs:
           $xml  = Get-Content $path -Raw
           # each build installs over the previous one as an update
           $xml  = $xml -replace '(<Identity [^>]*Version=")(\d+\.\d+\.\d+)\.\d+', ('${1}${2}.' + $env:GITHUB_RUN_NUMBER)
+          if ($env:IDENTITY -eq 'gamevault') {
+            # Game Vault checks for this package family; above the 1.22.2.95 it last saw
+            $xml  = $xml -replace '(<Identity [^>]*Version=")(\d+\.\d+\.\d+)\.\d+', ('${1}${2}.' + (100 + [int]$env:GITHUB_RUN_NUMBER))
+            $xml  = $xml -replace '(<Identity Name=")[^"]+', '${1}GamerDad.RetroArchForGameVault'
+            $xml  = $xml -replace '(<Identity [^>]*Publisher=")[^"]+', '${1}CN=GamerDad'
+            $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}3f6b2c9e-1d4a-4e7b-8a5c-6d2e9f1b4c70'
+            $xml  = $xml -replace '<DisplayName>[^<]*</DisplayName>', '<DisplayName>RetroArch Oberon</DisplayName>'
+            $xml  = $xml -replace '(<uap:VisualElements[^>]*?DisplayName=")[^"]*', '${1}RetroArch Oberon'
+            $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="gamevault-retroarch">'
+            if ($xml -notmatch 'Protocol Name="gamevault-retroarch"' -or $xml -notmatch 'Publisher="CN=GamerDad"') { throw "gamevault identity not set" }
+
+            # the package's Publisher must be its certificate's subject
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=GamerDad" -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5) -TextExtension @("2.5.29.19={text}")
+            $pw   = ConvertTo-SecureString -String "oberon" -Force -AsPlainText
+            Export-PfxCertificate -Cert $cert -FilePath "$env:RUNNER_TEMP/gamevault.pfx" -Password $pw | Out-Null
+            "SIGN_ARGS=-p:PackageCertificateKeyFile=$env:RUNNER_TEMP/gamevault.pfx -p:PackageCertificatePassword=oberon -p:PackageCertificateThumbprint=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          }
           if ($env:IDENTITY -eq 'own') {
             $xml  = $xml -replace '(<Identity Name=")[^"]+', '${1}RetroArch.Oberon.Test'
             $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}8c2e6d1a-4f3b-4a7e-9b5d-2e7f4c1a6b90'
@@ -45,13 +63,9 @@ jobs:
             # keep the retroarch: protocol with the installed RetroArch (launchers use it)
             $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="retroarch-oberon">'
             if ($xml -notmatch 'Protocol Name="retroarch-oberon"') { throw "protocol not renamed" }
-            # Game Vault opens RetroArch through this one
-            $gv   = '<uap:Extension Category="windows.protocol"><uap:Protocol Name="gamevault-retroarch"><uap:DisplayName>gamevault-retroarch</uap:DisplayName></uap:Protocol></uap:Extension>'
-            $xml  = $xml -replace '</Extensions>', ($gv + '</Extensions>')
-            if ($xml -notmatch 'Protocol Name="gamevault-retroarch"') { throw "gamevault protocol not added" }
           }
           Set-Content $path $xml -NoNewline
-          Select-String -Path $path -Pattern 'Identity|DisplayName'
+          Select-String -Path $path -Pattern 'Identity|DisplayName|Protocol Name'
 
       # UWP loads cores only from inside the package.
       - name: Bundle cores
@@ -90,7 +104,8 @@ jobs:
         working-directory: "${{github.workspace}}/pkg/msvc"
         run: |
           # MESA, as XboxEmulationHub's cores expect: mupen64plus_next needs desktop GL
-          msbuild -p:"Configuration=Release" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
+          $sign = if ($env:SIGN_ARGS) { $env:SIGN_ARGS.Split(' ') } else { @() }
+          msbuild -p:"Configuration=Release" -p:"Platform=x64" @sign .\RetroArch-msvc2022-UWP.sln
 
       - uses: actions/upload-artifact@v4
         with:
