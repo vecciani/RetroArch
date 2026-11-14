@@ -68,7 +68,8 @@ jobs:
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc"
         run: |
-          msbuild -p:"Configuration=Release" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
+          # ANGLE, as the Xbox builds ship: with MESA a GL core's frames never reach D3D11
+          msbuild -p:"Configuration=ReleaseANGLE" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
 
       - uses: actions/upload-artifact@v4
         with:
