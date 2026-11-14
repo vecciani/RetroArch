@@ -535,6 +535,69 @@ static void wgi_poll_raw(wgi_pad_t *p)
          array_view<double>(p->raw_axes, p->raw_axes + p->num_axes));
 }
 
+/* TEST BUILD ONLY: show on screen what each pad sends when it changes. */
+static uint64_t wgi_debug_sig[WGI_MAX_PADS];
+
+static void wgi_debug_report(unsigned i, const wgi_pad_t *p, const char *err)
+{
+   char msg[192];
+   unsigned j;
+   uint64_t sig = 0;
+   uint32_t raw_bits = 0;
+
+   if (err)
+   {
+      snprintf(msg, sizeof(msg), "WGI p%u %s: read error (%s)",
+            i, p->display_name, err);
+      runloop_msg_queue_push(msg, strlen(msg), 1, 180, false, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+      return;
+   }
+
+   if (p->pad)
+   {
+      sig = (uint64_t)p->reading.Buttons
+         ^ ((uint64_t)(uint16_t)wgi_to_axis(p->reading.LeftThumbstickX) << 32)
+         ^ ((uint64_t)(uint16_t)wgi_to_axis(p->reading.LeftThumbstickY) << 48)
+         ^ ((uint64_t)(uint8_t)(p->reading.RightTrigger * 255) << 16)
+         ^ ((uint64_t)(uint8_t)(p->reading.LeftTrigger * 255) << 24);
+   }
+   else
+   {
+      for (j = 0; j < p->num_buttons && j < 32; j++)
+         if (p->raw_buttons[j])
+            raw_bits |= 1u << j;
+      sig = raw_bits;
+      for (j = 0; j < p->num_switches && j < WGI_RAW_MAX_SWITCH; j++)
+         sig ^= (uint64_t)p->raw_switches[j] << (32 + j * 4);
+      for (j = 0; j < p->num_axes && j < 4; j++)
+         sig ^= (uint64_t)(uint8_t)(p->raw_axes[j] * 15.0) << (48 + j * 4);
+   }
+
+   if (sig == wgi_debug_sig[i])
+      return;
+   wgi_debug_sig[i] = sig;
+
+   if (p->pad)
+      snprintf(msg, sizeof(msg),
+            "WGI p%u %s [gamepad] buttons=%04x LX=%.2f LY=%.2f LT=%.2f RT=%.2f",
+            i, p->display_name, (unsigned)p->reading.Buttons,
+            p->reading.LeftThumbstickX, p->reading.LeftThumbstickY,
+            p->reading.LeftTrigger, p->reading.RightTrigger);
+   else
+      snprintf(msg, sizeof(msg),
+            "WGI p%u %s [raw %u/%u/%u] buttons=%08x hat=%d axes=%.2f %.2f %.2f %.2f",
+            i, p->display_name, p->num_buttons, p->num_switches, p->num_axes,
+            raw_bits, p->num_switches ? (int)p->raw_switches[0] : -1,
+            p->num_axes > 0 ? p->raw_axes[0] : 0.0,
+            p->num_axes > 1 ? p->raw_axes[1] : 0.0,
+            p->num_axes > 2 ? p->raw_axes[2] : 0.0,
+            p->num_axes > 3 ? p->raw_axes[3] : 0.0);
+   RARCH_LOG("[WGI] %s\n", msg);
+   runloop_msg_queue_push(msg, strlen(msg), 1, 120, true, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+}
+
 static void wgi_joypad_poll(void)
 {
    unsigned i;
@@ -553,9 +616,20 @@ static void wgi_joypad_poll(void)
             p->reading = p->pad.GetCurrentReading();
          else
             wgi_poll_raw(p);
+         wgi_debug_report(i, p, NULL);
+      }
+      catch (hresult_error const &e)
+      {
+         char hr[16];
+         snprintf(hr, sizeof(hr), "0x%08x", (unsigned)e.code().value);
+         wgi_debug_report(i, p, hr);
+         p->reading = GamepadReading{};
+         memset(p->raw_buttons, 0, sizeof(p->raw_buttons));
+         wgi_dirty  = true;
       }
       catch (...)
       {
+         wgi_debug_report(i, p, "unknown");
          p->reading = GamepadReading{};
          memset(p->raw_buttons, 0, sizeof(p->raw_buttons));
          wgi_dirty  = true;
