@@ -27,6 +27,8 @@ jobs:
           $path = "pkg/msvc/msvc-uwp/Package.appxmanifest"
           $xml  = Get-Content $path -Raw
           $xml  = $xml -replace '(<Identity Name=")[^"]+', '${1}RetroArch.WGI.Test'
+          # each build installs over the previous one as an update
+          $xml  = $xml -replace '(<Identity [^>]*Version=")(\d+\.\d+\.\d+)\.\d+', ('${1}${2}.' + $env:GITHUB_RUN_NUMBER)
           $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}5b0c4a3e-7d1f-4c8a-9e2b-1f6d3a8c9e70'
           $xml  = $xml -replace '<DisplayName>[^<]*</DisplayName>', '<DisplayName>RetroArch WGI</DisplayName>'
           $xml  = $xml -replace '(<uap:VisualElements[^>]*?DisplayName=")[^"]*', '${1}RetroArch WGI'
