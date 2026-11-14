@@ -14,9 +14,11 @@
 
 /* Windows.Gaming.Input pads for UWP. Some pads exist only here and not
  * in XInput, such as the virtual pads InputInjector creates on Xbox.
- * Buttons and axes are numbered as in xinput_joypad.c. */
+ * Pads that are a Gamepad are numbered as in xinput_joypad.c; any other
+ * RawGameController is read as plain buttons, hats and axes. */
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +39,7 @@
 
 #include "../../tasks/tasks_internal.h"
 #include "../input_driver.h"
+#include "../../runloop.h"
 #include "../../verbosity.h"
 
 using namespace winrt;
@@ -44,9 +47,12 @@ using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Foundation::Collections;
 using namespace winrt::Windows::Gaming::Input;
 
-#define WGI_MAX_PADS    8
-#define WGI_NUM_BUTTONS 10
-#define WGI_NAME        "WGI Gamepad"
+#define WGI_MAX_PADS        8
+#define WGI_NUM_BUTTONS     10
+#define WGI_RAW_MAX_BUTTONS 64
+#define WGI_RAW_MAX_SWITCH  4
+#define WGI_RAW_MAX_AXES    16
+#define WGI_NAME            "WGI Gamepad"
 
 static const GamepadButtons wgi_button_map[WGI_NUM_BUTTONS] = {
    GamepadButtons::A,
@@ -63,11 +69,18 @@ static const GamepadButtons wgi_button_map[WGI_NUM_BUTTONS] = {
 
 typedef struct wgi_pad
 {
-   Gamepad          pad{ nullptr };
-   GamepadReading   reading{};
-   GamepadVibration vibration{};
-   char             display_name[128];
-   bool             connected;
+   RawGameController           raw{ nullptr };
+   Gamepad                     pad{ nullptr };
+   GamepadReading              reading{};
+   GamepadVibration            vibration{};
+   bool                        raw_buttons[WGI_RAW_MAX_BUTTONS];
+   GameControllerSwitchPosition raw_switches[WGI_RAW_MAX_SWITCH];
+   double                      raw_axes[WGI_RAW_MAX_AXES];
+   unsigned                    num_buttons;
+   unsigned                    num_switches;
+   unsigned                    num_axes;
+   char                        display_name[128];
+   bool                        connected;
 } wgi_pad_t;
 
 static wgi_pad_t         wgi_pads[WGI_MAX_PADS];
@@ -93,54 +106,95 @@ static int16_t wgi_to_axis(double v)
 
 static void wgi_clear_pad(wgi_pad_t *p)
 {
+   unsigned i;
+
+   p->raw             = nullptr;
    p->pad             = nullptr;
    p->reading         = GamepadReading{};
    p->vibration       = GamepadVibration{};
+   memset(p->raw_buttons, 0, sizeof(p->raw_buttons));
+   memset(p->raw_axes,    0, sizeof(p->raw_axes));
+   for (i = 0; i < WGI_RAW_MAX_SWITCH; i++)
+      p->raw_switches[i] = GameControllerSwitchPosition::Center;
+   p->num_buttons     = 0;
+   p->num_switches    = 0;
+   p->num_axes        = 0;
    p->display_name[0] = '\0';
    p->connected       = false;
 }
 
-static void wgi_fill_name(wgi_pad_t *p, unsigned *vid, unsigned *pid)
+static void wgi_attach(wgi_pad_t *p, RawGameController const &raw)
 {
+   unsigned vid = 0, pid = 0;
+
+   p->raw       = raw;
+   p->connected = true;
    strlcpy(p->display_name, WGI_NAME, sizeof(p->display_name));
-   *vid = 0;
-   *pid = 0;
+
    try
    {
-      RawGameController raw = RawGameController::FromGameController(p->pad);
-      if (raw)
-      {
-         std::string name = to_string(raw.DisplayName());
-         if (!name.empty())
-            strlcpy(p->display_name, name.c_str(), sizeof(p->display_name));
-         *vid = raw.HardwareVendorId();
-         *pid = raw.HardwareProductId();
-      }
+      p->pad = Gamepad::FromGameController(raw);
+   }
+   catch (...)
+   {
+      p->pad = nullptr;
+   }
+
+   try
+   {
+      std::string name = to_string(raw.DisplayName());
+      if (!name.empty())
+         strlcpy(p->display_name, name.c_str(), sizeof(p->display_name));
+      vid             = raw.HardwareVendorId();
+      pid             = raw.HardwareProductId();
+      p->num_buttons  = (unsigned)raw.ButtonCount();
+      p->num_switches = (unsigned)raw.SwitchCount();
+      p->num_axes     = (unsigned)raw.AxisCount();
    }
    catch (...)
    {
    }
+
+   RARCH_LOG("[WGI] Pad %u: \"%s\" (%04x:%04x) %s, %u buttons, %u switches, %u axes.\n",
+         (unsigned)(p - wgi_pads), p->display_name, vid, pid,
+         p->pad ? "gamepad" : "raw",
+         p->num_buttons, p->num_switches, p->num_axes);
+
+   /* A Gamepad is found by WGI_NAME for the built-in profile,
+    * anything else by its own name. */
+   input_autoconfigure_connect(
+         p->pad ? WGI_NAME : p->display_name,
+         p->display_name,
+         NULL,
+         wgi_joypad.ident,
+         (unsigned)(p - wgi_pads),
+         vid,
+         pid);
 }
 
 /* Pads keep their slot while connected. */
 static void wgi_rescan(void)
 {
+   char msg[128];
    unsigned i, j;
-   IVectorView<Gamepad> list{ nullptr };
+   unsigned total    = 0;
+   unsigned gamepads = 0;
+   IVectorView<RawGameController> list{ nullptr };
 
    try
    {
-      list = Gamepad::Gamepads();
+      list = RawGameController::RawGameControllers();
    }
    catch (...)
    {
+      RARCH_ERR("[WGI] RawGameControllers() failed.\n");
       return;
    }
 
    for (i = 0; i < WGI_MAX_PADS; i++)
    {
       uint32_t idx = 0;
-      if (!wgi_pads[i].connected || list.IndexOf(wgi_pads[i].pad, idx))
+      if (!wgi_pads[i].connected || list.IndexOf(wgi_pads[i].raw, idx))
          continue;
       input_autoconfigure_disconnect(i, wgi_pads[i].display_name);
       wgi_clear_pad(&wgi_pads[i]);
@@ -148,14 +202,13 @@ static void wgi_rescan(void)
 
    for (j = 0; j < list.Size(); j++)
    {
-      unsigned vid, pid;
-      wgi_pad_t *p  = NULL;
-      bool known    = false;
-      Gamepad gp    = list.GetAt(j);
+      wgi_pad_t *p          = NULL;
+      bool known            = false;
+      RawGameController raw = list.GetAt(j);
 
       for (i = 0; i < WGI_MAX_PADS; i++)
       {
-         if (wgi_pads[i].connected && wgi_pads[i].pad == gp)
+         if (wgi_pads[i].connected && wgi_pads[i].raw == raw)
          {
             known = true;
             break;
@@ -164,21 +217,24 @@ static void wgi_rescan(void)
             p = &wgi_pads[i];
       }
 
-      if (known || !p)
-         continue;
-
-      p->pad       = gp;
-      p->connected = true;
-      wgi_fill_name(p, &vid, &pid);
-      input_autoconfigure_connect(
-            WGI_NAME,
-            p->display_name,
-            NULL,
-            wgi_joypad.ident,
-            (unsigned)(p - wgi_pads),
-            vid,
-            pid);
+      if (!known && p)
+         wgi_attach(p, raw);
    }
+
+   for (i = 0; i < WGI_MAX_PADS; i++)
+   {
+      if (!wgi_pads[i].connected)
+         continue;
+      total++;
+      if (wgi_pads[i].pad)
+         gamepads++;
+   }
+
+   snprintf(msg, sizeof(msg), "WGI: %u controller(s), %u gamepad(s), %u listed.",
+         total, gamepads, (unsigned)list.Size());
+   RARCH_LOG("[WGI] %s\n", msg);
+   runloop_msg_queue_push(msg, strlen(msg), 1, 240, false, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
 }
 
 static void *wgi_joypad_init(void *data)
@@ -190,20 +246,20 @@ static void *wgi_joypad_init(void *data)
 
    try
    {
-      wgi_added_token   = Gamepad::GamepadAdded(
-            [](IInspectable const&, Gamepad const&)
+      wgi_added_token   = RawGameController::RawGameControllerAdded(
+            [](IInspectable const&, RawGameController const&)
             {
                wgi_dirty = true;
             });
-      wgi_removed_token = Gamepad::GamepadRemoved(
-            [](IInspectable const&, Gamepad const&)
+      wgi_removed_token = RawGameController::RawGameControllerRemoved(
+            [](IInspectable const&, RawGameController const&)
             {
                wgi_dirty = true;
             });
    }
    catch (...)
    {
-      RARCH_ERR("[WGI] Failed to register for gamepad events.\n");
+      RARCH_ERR("[WGI] Failed to register for controller events.\n");
       return NULL;
    }
 
@@ -222,8 +278,8 @@ static void wgi_joypad_destroy(void)
    {
       try
       {
-         Gamepad::GamepadAdded(wgi_added_token);
-         Gamepad::GamepadRemoved(wgi_removed_token);
+         RawGameController::RawGameControllerAdded(wgi_added_token);
+         RawGameController::RawGameControllerRemoved(wgi_removed_token);
       }
       catch (...)
       {
@@ -232,7 +288,7 @@ static void wgi_joypad_destroy(void)
 
    for (i = 0; i < WGI_MAX_PADS; i++)
    {
-      if (wgi_pads[i].connected)
+      if (wgi_pads[i].connected && wgi_pads[i].pad)
       {
          try
          {
@@ -263,27 +319,69 @@ static bool wgi_joypad_query_pad(unsigned port)
 
 static const char *wgi_joypad_name(unsigned port)
 {
-   if (!wgi_get(port))
+   wgi_pad_t *p = wgi_get(port);
+   if (!p)
       return NULL;
-   return WGI_NAME;
+   return p->pad ? WGI_NAME : p->display_name;
 }
 
-static int32_t wgi_button_state(const GamepadReading *r, uint16_t joykey)
+static bool wgi_raw_hat(const wgi_pad_t *p, unsigned hat, unsigned dir)
+{
+   GameControllerSwitchPosition s;
+
+   if (hat >= p->num_switches || hat >= WGI_RAW_MAX_SWITCH)
+      return false;
+   s = p->raw_switches[hat];
+
+   switch (dir)
+   {
+      case HAT_UP_MASK:
+         return s == GameControllerSwitchPosition::Up
+             || s == GameControllerSwitchPosition::UpLeft
+             || s == GameControllerSwitchPosition::UpRight;
+      case HAT_DOWN_MASK:
+         return s == GameControllerSwitchPosition::Down
+             || s == GameControllerSwitchPosition::DownLeft
+             || s == GameControllerSwitchPosition::DownRight;
+      case HAT_LEFT_MASK:
+         return s == GameControllerSwitchPosition::Left
+             || s == GameControllerSwitchPosition::UpLeft
+             || s == GameControllerSwitchPosition::DownLeft;
+      case HAT_RIGHT_MASK:
+         return s == GameControllerSwitchPosition::Right
+             || s == GameControllerSwitchPosition::UpRight
+             || s == GameControllerSwitchPosition::DownRight;
+      default:
+         break;
+   }
+   return false;
+}
+
+static int32_t wgi_button_state(const wgi_pad_t *p, uint16_t joykey)
 {
    unsigned hat_dir = GET_HAT_DIR(joykey);
+
+   if (!p->pad)
+   {
+      if (hat_dir)
+         return wgi_raw_hat(p, GET_HAT(joykey), hat_dir);
+      if (joykey < p->num_buttons && joykey < WGI_RAW_MAX_BUTTONS)
+         return p->raw_buttons[joykey];
+      return 0;
+   }
 
    if (hat_dir)
    {
       switch (hat_dir)
       {
          case HAT_UP_MASK:
-            return wgi_has(r->Buttons, GamepadButtons::DPadUp);
+            return wgi_has(p->reading.Buttons, GamepadButtons::DPadUp);
          case HAT_DOWN_MASK:
-            return wgi_has(r->Buttons, GamepadButtons::DPadDown);
+            return wgi_has(p->reading.Buttons, GamepadButtons::DPadDown);
          case HAT_LEFT_MASK:
-            return wgi_has(r->Buttons, GamepadButtons::DPadLeft);
+            return wgi_has(p->reading.Buttons, GamepadButtons::DPadLeft);
          case HAT_RIGHT_MASK:
-            return wgi_has(r->Buttons, GamepadButtons::DPadRight);
+            return wgi_has(p->reading.Buttons, GamepadButtons::DPadRight);
          default:
             break;
       }
@@ -291,24 +389,23 @@ static int32_t wgi_button_state(const GamepadReading *r, uint16_t joykey)
    }
 
    if (joykey < WGI_NUM_BUTTONS)
-      return wgi_has(r->Buttons, wgi_button_map[joykey]);
+      return wgi_has(p->reading.Buttons, wgi_button_map[joykey]);
    return 0;
 }
 
-static int16_t wgi_axis_state(const GamepadReading *r, uint32_t joyaxis)
+static int16_t wgi_axis_state(const wgi_pad_t *p, uint32_t joyaxis)
 {
    int16_t val = 0;
    int axis    = -1;
    bool is_neg = false;
    bool is_pos = false;
 
-   /* triggers (axes 4,5) cannot be negative */
-   if (AXIS_NEG_GET(joyaxis) <= 3)
+   if (AXIS_NEG_GET(joyaxis) < WGI_RAW_MAX_AXES)
    {
       axis   = AXIS_NEG_GET(joyaxis);
       is_neg = true;
    }
-   else if (AXIS_POS_GET(joyaxis) <= 5)
+   else if (AXIS_POS_GET(joyaxis) < WGI_RAW_MAX_AXES)
    {
       axis   = AXIS_POS_GET(joyaxis);
       is_pos = true;
@@ -316,26 +413,41 @@ static int16_t wgi_axis_state(const GamepadReading *r, uint32_t joyaxis)
    else
       return 0;
 
-   switch (axis)
+   if (!p->pad)
    {
-      case 0:
-         val = wgi_to_axis(r->LeftThumbstickX);
-         break;
-      case 1:
-         val = wgi_to_axis(r->LeftThumbstickY);
-         break;
-      case 2:
-         val = wgi_to_axis(r->RightThumbstickX);
-         break;
-      case 3:
-         val = wgi_to_axis(r->RightThumbstickY);
-         break;
-      case 4:
-         val = wgi_to_axis(r->LeftTrigger);
-         break;
-      case 5:
-         val = wgi_to_axis(r->RightTrigger);
-         break;
+      /* raw axes go from 0 to 1, centered at 0.5 */
+      if ((unsigned)axis >= p->num_axes)
+         return 0;
+      val = wgi_to_axis(p->raw_axes[axis] * 2.0 - 1.0);
+   }
+   else
+   {
+      /* triggers (axes 4,5) cannot be negative */
+      if (is_neg && axis > 3)
+         return 0;
+      switch (axis)
+      {
+         case 0:
+            val = wgi_to_axis(p->reading.LeftThumbstickX);
+            break;
+         case 1:
+            val = wgi_to_axis(p->reading.LeftThumbstickY);
+            break;
+         case 2:
+            val = wgi_to_axis(p->reading.RightThumbstickX);
+            break;
+         case 3:
+            val = wgi_to_axis(p->reading.RightThumbstickY);
+            break;
+         case 4:
+            val = wgi_to_axis(p->reading.LeftTrigger);
+            break;
+         case 5:
+            val = wgi_to_axis(p->reading.RightTrigger);
+            break;
+         default:
+            return 0;
+      }
    }
 
    if (is_neg && val > 0)
@@ -350,7 +462,7 @@ static int32_t wgi_joypad_button(unsigned port, uint16_t joykey)
    wgi_pad_t *p = wgi_get(port);
    if (!p)
       return 0;
-   return wgi_button_state(&p->reading, joykey);
+   return wgi_button_state(p, joykey);
 }
 
 static void wgi_joypad_get_buttons(unsigned port, input_bits_t *state)
@@ -361,6 +473,13 @@ static void wgi_joypad_get_buttons(unsigned port, input_bits_t *state)
    BIT256_CLEAR_ALL_PTR(state);
    if (!p)
       return;
+   if (!p->pad)
+   {
+      for (i = 0; i < p->num_buttons && i < WGI_RAW_MAX_BUTTONS; i++)
+         if (p->raw_buttons[i])
+            BIT256_SET_PTR(state, i);
+      return;
+   }
    for (i = 0; i < WGI_NUM_BUTTONS; i++)
       if (wgi_has(p->reading.Buttons, wgi_button_map[i]))
          BIT256_SET_PTR(state, i);
@@ -371,7 +490,7 @@ static int16_t wgi_joypad_axis(unsigned port, uint32_t joyaxis)
    wgi_pad_t *p = wgi_get(port);
    if (!p)
       return 0;
-   return wgi_axis_state(&p->reading, joyaxis);
+   return wgi_axis_state(p, joyaxis);
 }
 
 static int16_t wgi_joypad_state(
@@ -392,15 +511,28 @@ static int16_t wgi_joypad_state(
       const uint16_t joykey  = joykeys[i];
       const uint32_t joyaxis = joyaxes[i];
       if (     joykey != NO_BTN
-            && wgi_button_state(&p->reading, joykey))
+            && wgi_button_state(p, joykey))
          ret |= (1 << i);
       else if (joyaxis != AXIS_NONE &&
-            ((float)abs(wgi_axis_state(&p->reading, joyaxis))
+            ((float)abs(wgi_axis_state(p, joyaxis))
              / 0x8000) > joypad_info->axis_threshold)
          ret |= (1 << i);
    }
 
    return ret;
+}
+
+static void wgi_poll_raw(wgi_pad_t *p)
+{
+   if (     p->num_buttons  > WGI_RAW_MAX_BUTTONS
+         || p->num_switches > WGI_RAW_MAX_SWITCH
+         || p->num_axes     > WGI_RAW_MAX_AXES)
+      return;
+   p->raw.GetCurrentReading(
+         array_view<bool>(p->raw_buttons, p->raw_buttons + p->num_buttons),
+         array_view<GameControllerSwitchPosition>(p->raw_switches,
+            p->raw_switches + p->num_switches),
+         array_view<double>(p->raw_axes, p->raw_axes + p->num_axes));
 }
 
 static void wgi_joypad_poll(void)
@@ -412,16 +544,21 @@ static void wgi_joypad_poll(void)
 
    for (i = 0; i < WGI_MAX_PADS; i++)
    {
-      if (!wgi_pads[i].connected)
+      wgi_pad_t *p = &wgi_pads[i];
+      if (!p->connected)
          continue;
       try
       {
-         wgi_pads[i].reading = wgi_pads[i].pad.GetCurrentReading();
+         if (p->pad)
+            p->reading = p->pad.GetCurrentReading();
+         else
+            wgi_poll_raw(p);
       }
       catch (...)
       {
-         wgi_pads[i].reading = GamepadReading{};
-         wgi_dirty           = true;
+         p->reading = GamepadReading{};
+         memset(p->raw_buttons, 0, sizeof(p->raw_buttons));
+         wgi_dirty  = true;
       }
    }
 }
@@ -432,7 +569,7 @@ static bool wgi_joypad_rumble(unsigned port,
    GamepadVibration prev;
    wgi_pad_t *p = wgi_get(port);
 
-   if (!p)
+   if (!p || !p->pad)
       return false;
 
    prev = p->vibration;
