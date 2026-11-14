@@ -263,9 +263,9 @@ static void *wgi_joypad_init(void *data)
       return NULL;
    }
 
+   /* First scan on the first poll: the message queue is not up yet. */
    wgi_inited = true;
-   wgi_dirty  = false;
-   wgi_rescan();
+   wgi_dirty  = true;
 
    return (void*)-1;
 }
