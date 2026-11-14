@@ -30,6 +30,9 @@ jobs:
           $xml  = $xml -replace '(PhoneProductId=")[^"]+', '${1}5b0c4a3e-7d1f-4c8a-9e2b-1f6d3a8c9e70'
           $xml  = $xml -replace '<DisplayName>[^<]*</DisplayName>', '<DisplayName>RetroArch WGI</DisplayName>'
           $xml  = $xml -replace '(<uap:VisualElements[^>]*?DisplayName=")[^"]*', '${1}RetroArch WGI'
+          # keep the retroarch: protocol with the installed RetroArch (launchers use it)
+          $xml  = $xml -replace '<uap:Protocol Name="retroarch">', '<uap:Protocol Name="retroarch-wgi">'
+          if ($xml -notmatch 'Protocol Name="retroarch-wgi"') { throw "protocol not renamed" }
           Set-Content $path $xml -NoNewline
           Select-String -Path $path -Pattern 'Identity|DisplayName'
 
