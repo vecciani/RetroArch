@@ -67,14 +67,16 @@ jobs:
           if ((Get-FileHash "$xeh/RetroArch-SeriesConsoles-AllCores.appx" -Algorithm SHA256).Hash -ne "0B327BF6CC4D0B18CAA0A0FC2337C96B53920F46BBFD136920E1ED9E5656B00A") { throw "checksum: AllCores" }
           Expand-Archive "$xeh/RetroArch-SeriesConsoles-AllCores.appx" "$xeh/x" -Force
           Copy-Item "$xeh/x/cores/*_libretro.dll" "$dir/cores/"
-          # not libEGL/libGLESv2: the package's own are ANGLE's
-          foreach ($f in "opengl32","libgallium_wgl","dxil","spirv_to_dxil","vulkan_dzn","z-1","winmm","msvcp140","msvcp140_1","vcruntime140","vcruntime140_1") {
+          # MESA's own DLLs come with the package
+          foreach ($f in "winmm","msvcp140","msvcp140_1","vcruntime140","vcruntime140_1") {
             Copy-Item "$xeh/x/$f.dll" "$dir/"
           }
           Remove-Item -Recurse -Force $xeh
 
-          # the user's own cores take precedence
+          # the user's own cores take precedence, but for their GLES (ANGLE) parallel_n64
           gh release download uwp-cores-x64 -R $env:GITHUB_REPOSITORY -D $dir --clobber
+          Remove-Item "$dir/parallel_n64_libretro.dll"
+          (Get-Content "$dir/SHA256SUMS") | Where-Object { $_ -notmatch "parallel_n64" } | Set-Content "$dir/SHA256SUMS"
           Get-Content "$dir/SHA256SUMS" | ForEach-Object {
             $hash, $name = $_ -split '\s+', 2
             if ((Get-FileHash "$dir/$name" -Algorithm SHA256).Hash -ne $hash) { throw "checksum: $name" }
@@ -87,8 +89,8 @@ jobs:
       - name: Compile RA
         working-directory: "${{github.workspace}}/pkg/msvc"
         run: |
-          # ANGLE, as the Xbox builds ship: with MESA a GL core's frames never reach D3D11
-          msbuild -p:"Configuration=ReleaseANGLE" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
+          # MESA, as XboxEmulationHub's cores expect: mupen64plus_next needs desktop GL
+          msbuild -p:"Configuration=Release" -p:"Platform=x64" .\RetroArch-msvc2022-UWP.sln
 
       - uses: actions/upload-artifact@v4
         with:
