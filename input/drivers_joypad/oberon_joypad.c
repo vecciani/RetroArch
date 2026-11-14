@@ -13,9 +13,9 @@
  */
 
 /* Pads of an Oberon Remote (github.com/SamsidParty/OberonRemote) on the
- * local network, read over its WebSocket. They are numbered as in
- * xinput_joypad.c and share the port of the XInput pad of the same
- * index, which this driver keeps running. */
+ * local network, read over its WebSocket, with buttons numbered as in
+ * xinput_joypad.c. The XInput pads, which this driver keeps running,
+ * stay on pads 0-3; the remote's come after them. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +41,8 @@
 #include "../../verbosity.h"
 
 #define OBERON_MAX_PADS     4
+/* the XInput pads come first */
+#define OBERON_FIRST_PAD    4
 #define OBERON_NUM_BUTTONS  11
 #define OBERON_NUM_AXES     6
 #define OBERON_PORT         26401
@@ -91,8 +93,9 @@ typedef struct oberon
    enum oberon_phase phase;
    oberon_pad_t pads[OBERON_MAX_PADS];
    uint8_t rumble[OBERON_MAX_PADS][2];
-   /* ports this driver named, no other pad being on them */
    bool named[OBERON_MAX_PADS];
+   /* Some remotes report all four pads present: one counts once it moves. */
+   bool seen[OBERON_MAX_PADS];
    bool awaiting;
    bool up;
    bool reported;
@@ -596,11 +599,17 @@ static void oberon_network_poll(oberon_t *ob)
    }
 }
 
-static INLINE oberon_pad_t *oberon_get(unsigned port)
+/* NULL unless @pad is one of the remote's, there and counted. */
+static oberon_pad_t *oberon_get(unsigned pad)
 {
-   if (port >= OBERON_MAX_PADS || !oberon_st.pads[port].connected)
+   unsigned i;
+
+   if (pad < OBERON_FIRST_PAD || pad >= OBERON_FIRST_PAD + OBERON_MAX_PADS)
       return NULL;
-   return &oberon_st.pads[port];
+   i = pad - OBERON_FIRST_PAD;
+   if (!oberon_st.pads[i].connected || (i && !oberon_st.seen[i]))
+      return NULL;
+   return &oberon_st.pads[i];
 }
 
 static int32_t oberon_button_state(const oberon_pad_t *pad, uint16_t joykey)
@@ -668,53 +677,59 @@ static void oberon_joypad_destroy(void)
    oberon_st.fd = -1;
 }
 
-static bool oberon_joypad_query_pad(unsigned port)
+static bool oberon_joypad_query_pad(unsigned pad)
 {
-   return OBERON_INNER->query_pad(port) || oberon_get(port);
+   if (pad < OBERON_FIRST_PAD)
+      return OBERON_INNER->query_pad(pad);
+   return oberon_get(pad) != NULL;
 }
 
-static const char *oberon_joypad_name(unsigned port)
+static const char *oberon_joypad_name(unsigned pad)
 {
-   if (OBERON_INNER->query_pad(port))
-      return OBERON_INNER->name(port);
-   return oberon_get(port) ? OBERON_NAME : NULL;
+   if (pad < OBERON_FIRST_PAD)
+      return OBERON_INNER->name(pad);
+   return oberon_get(pad) ? OBERON_NAME : NULL;
 }
 
-static int32_t oberon_joypad_button(unsigned port, uint16_t joykey)
+static int32_t oberon_joypad_button(unsigned pad, uint16_t joykey)
 {
-   int32_t ret       = OBERON_INNER->button(port, joykey);
-   oberon_pad_t *pad = oberon_get(port);
+   oberon_pad_t *p;
 
-   if (pad && oberon_button_state(pad, joykey))
-      ret            = 1;
-   return ret;
+   if (pad < OBERON_FIRST_PAD)
+      return OBERON_INNER->button(pad, joykey);
+   if (!(p = oberon_get(pad)))
+      return 0;
+   return oberon_button_state(p, joykey) ? 1 : 0;
 }
 
-static void oberon_joypad_get_buttons(unsigned port, input_bits_t *state)
+static void oberon_joypad_get_buttons(unsigned pad, input_bits_t *state)
 {
    unsigned i;
-   oberon_pad_t *pad = oberon_get(port);
+   oberon_pad_t *p;
 
-   OBERON_INNER->get_buttons(port, state);
-   if (!pad)
+   if (pad < OBERON_FIRST_PAD)
+   {
+      OBERON_INNER->get_buttons(pad, state);
+      return;
+   }
+
+   BIT256_CLEAR_ALL_PTR(state);
+   if (!(p = oberon_get(pad)))
       return;
    for (i = 0; i < OBERON_NUM_BUTTONS; i++)
-      if (pad->buttons & oberon_button_map[i])
+      if (p->buttons & oberon_button_map[i])
          BIT256_SET_PTR(state, i);
 }
 
-static int16_t oberon_joypad_axis(unsigned port, uint32_t joyaxis)
+static int16_t oberon_joypad_axis(unsigned pad, uint32_t joyaxis)
 {
-   int16_t ret       = OBERON_INNER->axis(port, joyaxis);
-   oberon_pad_t *pad = oberon_get(port);
+   oberon_pad_t *p;
 
-   if (pad)
-   {
-      int16_t val    = oberon_axis_state(pad, joyaxis);
-      if (abs(val) > abs(ret))
-         ret         = val;
-   }
-   return ret;
+   if (pad < OBERON_FIRST_PAD)
+      return OBERON_INNER->axis(pad, joyaxis);
+   if (!(p = oberon_get(pad)))
+      return 0;
+   return oberon_axis_state(p, joyaxis);
 }
 
 static int16_t oberon_joypad_state(
@@ -724,26 +739,41 @@ static int16_t oberon_joypad_state(
       unsigned port)
 {
    int i;
-   int16_t ret       = OBERON_INNER->state(joypad_info, joykeys, joyaxes, port);
-   oberon_pad_t *pad = oberon_get(joypad_info->joy_idx);
+   int16_t ret = 0;
+   oberon_pad_t *p;
 
-   if (!pad)
-      return ret;
+   if (joypad_info->joy_idx < OBERON_FIRST_PAD)
+      return OBERON_INNER->state(joypad_info, joykeys, joyaxes, port);
+   if (!(p = oberon_get(joypad_info->joy_idx)))
+      return 0;
 
    for (i = 0; i < RARCH_FIRST_CUSTOM_BIND; i++)
    {
       const uint16_t joykey  = joykeys[i];
       const uint32_t joyaxis = joyaxes[i];
       if (     joykey != NO_BTN
-            && oberon_button_state(pad, joykey))
+            && oberon_button_state(p, joykey))
          ret |= (1 << i);
       else if (joyaxis != AXIS_NONE &&
-            ((float)abs(oberon_axis_state(pad, joyaxis))
+            ((float)abs(oberon_axis_state(p, joyaxis))
              / 0x8000) > joypad_info->axis_threshold)
          ret |= (1 << i);
    }
 
    return ret;
+}
+
+/* Anything off rest: a button, or a stick or trigger past a quarter. */
+static bool oberon_pad_moved(const oberon_pad_t *p)
+{
+   unsigned j;
+
+   if (p->buttons)
+      return true;
+   for (j = 0; j < OBERON_NUM_AXES; j++)
+      if (abs(p->axes[j]) > 0x2000)
+         return true;
+   return false;
 }
 
 static void oberon_joypad_poll(void)
@@ -754,41 +784,47 @@ static void oberon_joypad_poll(void)
    OBERON_INNER->poll();
    oberon_network_poll(ob);
 
-   /* A port with another pad on it keeps that pad's name and binds,
-    * which are numbered the same. */
    for (i = 0; i < OBERON_MAX_PADS; i++)
    {
-      if (OBERON_INNER->query_pad(i))
-         ob->named[i] = false;
-      else if (ob->pads[i].connected && !ob->named[i])
+      bool there;
+
+      if (!ob->pads[i].connected)
+         ob->seen[i] = false;
+      else if (!ob->seen[i] && oberon_pad_moved(&ob->pads[i]))
+         ob->seen[i] = true;
+
+      there = oberon_get(OBERON_FIRST_PAD + i) != NULL;
+      if (there && !ob->named[i])
       {
          input_autoconfigure_connect(OBERON_NAME, NULL, NULL,
-               oberon_joypad.ident, i, 0, 0);
+               oberon_joypad.ident, OBERON_FIRST_PAD + i, 0, 0);
          ob->named[i] = true;
       }
-      else if (!ob->pads[i].connected && ob->named[i])
+      else if (!there && ob->named[i])
       {
-         input_autoconfigure_disconnect(i, OBERON_NAME);
+         input_autoconfigure_disconnect(OBERON_FIRST_PAD + i, OBERON_NAME);
          ob->named[i] = false;
       }
    }
 }
 
-static bool oberon_joypad_rumble(unsigned port,
+static bool oberon_joypad_rumble(unsigned pad,
       enum retro_rumble_effect effect, uint16_t strength)
 {
-   bool ret = OBERON_INNER->set_rumble(port, effect, strength);
+   unsigned i;
 
-   if (port >= OBERON_MAX_PADS)
-      return ret;
+   if (pad < OBERON_FIRST_PAD)
+      return OBERON_INNER->set_rumble(pad, effect, strength);
+   if (!oberon_get(pad))
+      return false;
 
    /* goes out with the next request */
+   i = pad - OBERON_FIRST_PAD;
    if (effect == RETRO_RUMBLE_STRONG)
-      oberon_st.rumble[port][0] = (uint8_t)(strength >> 8);
+      oberon_st.rumble[i][0] = (uint8_t)(strength >> 8);
    else if (effect == RETRO_RUMBLE_WEAK)
-      oberon_st.rumble[port][1] = (uint8_t)(strength >> 8);
-
-   return ret || oberon_get(port);
+      oberon_st.rumble[i][1] = (uint8_t)(strength >> 8);
+   return true;
 }
 
 input_device_driver_t oberon_joypad = {
